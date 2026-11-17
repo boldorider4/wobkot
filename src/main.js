@@ -1,3 +1,9 @@
+function send_log(text) {
+  try {
+    fetch('/log', { method: 'POST', body: text, keepalive: true }).catch(() => {});
+  } catch (e) {}
+}
+
 const logger = {
   verbose: true, // enable for debug logs
 
@@ -14,10 +20,14 @@ const logger = {
     if (this.verbose) this.log('[*]', `${msg}`);
   },
   log(prefix, msg) {
-    if (!this.console) return;
+    const line = `${prefix} ${String(msg).replace(/\n/g, `\n${prefix} `)}\n`;
 
-    this.console.append(`${prefix} ${String(msg).replace(/\n/g, `\n${prefix} `)}\n`);
-    this.console.scrollTop = this.console.scrollHeight;
+    if (this.console) {
+      this.console.append(line);
+      this.console.scrollTop = this.console.scrollHeight;
+    }
+
+    if (prefix !== '[*]') send_log(line);
   },
 };
 
@@ -70,26 +80,39 @@ async function load_file(src) {
 }
 
 async function main() {
+  logger.info('main() start');
+
   await load_script('src/misc.js');
 
   version.init();
+  logger.info(`console=${version.console} firmware=${version}`);
 
   switch (version.console) {
     case 4:
+      logger.info('loading src/ps4/impl.js');
       await load_script('src/ps4/impl.js');
       break;
     case 5:
+      logger.info('loading src/ps5/impl.js');
       await load_script('src/ps5/impl.js');
       break;
     default:
       throw new Error(`Unsupported console ${version.console}`);
   }
 
+  logger.info('loading src/userland.js');
   await load_script('src/userland.js');
-  await userland_main();
 
+  logger.info('running userland_main()');
+  await userland_main();
+  logger.info('userland done');
+
+  logger.info('loading src/kernel.js');
   await load_script('src/kernel.js');
+
+  logger.info('running kernel_main()');
   await kernel_main();
+  logger.info('kernel done');
 }
 
 logger.init();

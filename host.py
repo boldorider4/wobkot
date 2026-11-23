@@ -17,9 +17,10 @@ DEFAULT_CN = 'manuals.playstation.net'
 DEFAULT_SANS = ['manuals.playstation.net', 'manuals.playstation.sony.com', 'localhost']
 
 # --- auto payload delivery -------------------------------------------------
-PLDMGR_IP = '192.168.188.62'
+# Optional override. When None, the console's address is taken from its /log POST.
+PLDMGR_IP = None
 PLDMGR_PORT = 9021
-PLDMGR_ELF = Path('/path/to/pldmgr_v0.6.3.elf').expanduser()
+PLDMGR_ELF = Path.home() / 'repos/relapse-dev/payloads/pldmgr_v0.6.3.elf'
 PLDMGR_DELAY = 5  # seconds to wait after elfldr starts
 PLDMGR_TRIGGER = 'Created bin thread'  # PS5 log line that arms the timer
 
@@ -27,6 +28,18 @@ _pldmgr_armed = threading.Event()
 _pldmgr_lock = threading.Lock()
 _pldmgr_status = 'idle'
 _pldmgr_error = None
+_pldmgr_target = None
+
+
+def set_pldmgr_target(ip):
+    global _pldmgr_target
+
+    if ip:
+        _pldmgr_target = ip
+
+
+def pldmgr_target():
+    return PLDMGR_IP or _pldmgr_target
 
 
 def set_pldmgr_status(status, error=None):
@@ -75,12 +88,19 @@ def ensure_cert(cert, key, ip):
 
 
 def send_pldmgr():
-    # Equivalent to: nc PLDMGR_IP PLDMGR_PORT < PLDMGR_ELF
-    print(f'[pldmgr] sending {PLDMGR_ELF} -> {PLDMGR_IP}:{PLDMGR_PORT}', flush=True)
+    # Equivalent to: nc <console> PLDMGR_PORT < PLDMGR_ELF
+    target = pldmgr_target()
+
+    if not target:
+        print('[pldmgr] no console address seen in /log - skipping send', flush=True)
+        set_pldmgr_status('error', 'no console address seen in /log')
+        return
+
+    print(f'[pldmgr] sending {PLDMGR_ELF} -> {target}:{PLDMGR_PORT}', flush=True)
     set_pldmgr_status('sending')
     try:
         with PLDMGR_ELF.open('rb') as f, socket.create_connection(
-            (PLDMGR_IP, PLDMGR_PORT), timeout=10
+            (target, PLDMGR_PORT), timeout=10
         ) as sock:
             while chunk := f.read(1 << 16):
                 sock.sendall(chunk)
@@ -98,7 +118,7 @@ def arm_pldmgr():
 
     _pldmgr_armed.set()
     set_pldmgr_status('armed')
-    print(f'[pldmgr] elfldr up - firing in {PLDMGR_DELAY}s', flush=True)
+    print(f'[pldmgr] {pldmgr_target() or "console"} up - firing in {PLDMGR_DELAY}s', flush=True)
 
     timer = threading.Timer(PLDMGR_DELAY, send_pldmgr)
     timer.daemon = True
@@ -121,7 +141,7 @@ class WobkotHandler(SimpleHTTPRequestHandler):
                 'status': _pldmgr_status,
                 'error': _pldmgr_error,
                 'delay': PLDMGR_DELAY,
-                'ip': PLDMGR_IP,
+                'ip': pldmgr_target(),
                 'port': PLDMGR_PORT,
                 'file': str(PLDMGR_ELF),
             }
@@ -159,6 +179,10 @@ class WobkotHandler(SimpleHTTPRequestHandler):
 
         length = int(self.headers.get('Content-Length') or 0)
         body = self.rfile.read(length).decode('utf-8', 'replace')
+
+        # The browser that posts its logs is the console we send pldmgr to.
+        set_pldmgr_target(self.client_address[0])
+
         for line in body.splitlines():
             print(f'[ps5] {line}', flush=True)
             if PLDMGR_TRIGGER in line:
@@ -255,7 +279,8 @@ def main():
     print(f'[host] https://{ip}:{args.https_port}')
     print(f"[host] PS5 flow: Settings > Network > manual DNS {ip} -> User's Guide -> accept certificate warning")
     if PLDMGR_ELF.exists():
-        print(f'[pldmgr] armed: {PLDMGR_ELF.name} -> {PLDMGR_IP}:{PLDMGR_PORT} ({PLDMGR_DELAY}s after elfldr)')
+        target = PLDMGR_IP or 'console address from /log'
+        print(f'[pldmgr] armed: {PLDMGR_ELF.name} -> {target}:{PLDMGR_PORT} ({PLDMGR_DELAY}s after elfldr)')
     else:
         print(f'[pldmgr] warning: {PLDMGR_ELF} not found - auto-send will fail')
 

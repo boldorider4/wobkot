@@ -24,7 +24,6 @@ PLDMGR_ELF = None  # set from --pldmgr; when None, pldmgr is never sent
 PLDMGR_DELAY = 5  # seconds to wait after elfldr starts
 PLDMGR_TRIGGER = 'Created bin thread'  # PS5 log line that arms the timer
 
-_pldmgr_armed = threading.Event()
 _pldmgr_lock = threading.Lock()
 _pldmgr_status = 'idle'
 _pldmgr_error = None
@@ -117,11 +116,19 @@ def send_pldmgr():
 
 
 def arm_pldmgr():
-    if PLDMGR_ELF is None or _pldmgr_armed.is_set():
+    global _pldmgr_status, _pldmgr_error
+
+    if PLDMGR_ELF is None:
         return
 
-    _pldmgr_armed.set()
-    set_pldmgr_status('armed')
+    with _pldmgr_lock:
+        if _pldmgr_status in ('armed', 'sending'):
+            print(f'[pldmgr] already {_pldmgr_status} - ignoring duplicate trigger', flush=True)
+            return
+
+        _pldmgr_status = 'armed'
+        _pldmgr_error = None
+
     print(f'[pldmgr] {pldmgr_target() or "console"} up - firing in {PLDMGR_DELAY}s', flush=True)
 
     timer = threading.Timer(PLDMGR_DELAY, send_pldmgr)

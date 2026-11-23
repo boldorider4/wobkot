@@ -20,7 +20,7 @@ DEFAULT_SANS = ['manuals.playstation.net', 'manuals.playstation.sony.com', 'loca
 # Optional override. When None, the console's address is taken from its /log POST.
 PLDMGR_IP = None
 PLDMGR_PORT = 9021
-PLDMGR_ELF = Path.home() / 'repos/relapse-dev/payloads/pldmgr_v0.6.3.elf'
+PLDMGR_ELF = Path.home('/path/to/pldmgr_v0.6.3.elf')
 PLDMGR_DELAY = 5  # seconds to wait after elfldr starts
 PLDMGR_TRIGGER = 'Created bin thread'  # PS5 log line that arms the timer
 

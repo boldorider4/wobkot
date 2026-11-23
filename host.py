@@ -15,6 +15,15 @@ DEFAULT_KEY = HERE / 'key.pem'
 DEFAULT_CN = 'manuals.playstation.net'
 DEFAULT_SANS = ['manuals.playstation.net', 'manuals.playstation.sony.com', 'localhost']
 
+# --- auto payload delivery -------------------------------------------------
+PLDMGR_IP = '192.168.188.62'
+PLDMGR_PORT = 9021
+PLDMGR_ELF = Path('/path/to/pldmgr_v0.6.3.elf').expanduser()
+PLDMGR_DELAY = 5  # seconds to wait after elfldr starts
+PLDMGR_TRIGGER = 'Created bin thread'  # PS5 log line that arms the timer
+
+_pldmgr_armed = threading.Event()
+
 
 def detect_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -53,6 +62,33 @@ def ensure_cert(cert, key, ip):
     print(f'[cert] wrote {cert} and {key} (valid 10 years)')
 
 
+def send_pldmgr():
+    # Equivalent to: nc PLDMGR_IP PLDMGR_PORT < PLDMGR_ELF
+    print(f'[pldmgr] sending {PLDMGR_ELF} -> {PLDMGR_IP}:{PLDMGR_PORT}', flush=True)
+    try:
+        with PLDMGR_ELF.open('rb') as f, socket.create_connection(
+            (PLDMGR_IP, PLDMGR_PORT), timeout=10
+        ) as sock:
+            while chunk := f.read(1 << 16):
+                sock.sendall(chunk)
+            sock.shutdown(socket.SHUT_WR)
+        print(f'[pldmgr] sent {PLDMGR_ELF.stat().st_size} bytes', flush=True)
+    except OSError as e:
+        print(f'[pldmgr] send failed: {e}', flush=True)
+
+
+def arm_pldmgr():
+    if _pldmgr_armed.is_set():
+        return
+
+    _pldmgr_armed.set()
+    print(f'[pldmgr] elfldr up - firing in {PLDMGR_DELAY}s', flush=True)
+
+    timer = threading.Timer(PLDMGR_DELAY, send_pldmgr)
+    timer.daemon = True
+    timer.start()
+
+
 class WobkotHandler(SimpleHTTPRequestHandler):
     extensions_map = {
         **SimpleHTTPRequestHandler.extensions_map,
@@ -88,6 +124,8 @@ class WobkotHandler(SimpleHTTPRequestHandler):
         body = self.rfile.read(length).decode('utf-8', 'replace')
         for line in body.splitlines():
             print(f'[ps5] {line}', flush=True)
+            if PLDMGR_TRIGGER in line:
+                arm_pldmgr()
 
         self.send_response(204)
         self.send_header('Content-Length', '0')
@@ -179,6 +217,10 @@ def main():
         print(f'[host] http://{ip}:{args.http_port} -> https://{ip}:{args.https_port}')
     print(f'[host] https://{ip}:{args.https_port}')
     print(f"[host] PS5 flow: Settings > Network > manual DNS {ip} -> User's Guide -> accept certificate warning")
+    if PLDMGR_ELF.exists():
+        print(f'[pldmgr] armed: {PLDMGR_ELF.name} -> {PLDMGR_IP}:{PLDMGR_PORT} ({PLDMGR_DELAY}s after elfldr)')
+    else:
+        print(f'[pldmgr] warning: {PLDMGR_ELF} not found - auto-send will fail')
 
     try:
         httpsd.serve_forever()

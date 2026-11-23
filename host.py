@@ -20,7 +20,7 @@ DEFAULT_SANS = ['manuals.playstation.net', 'manuals.playstation.sony.com', 'loca
 # Optional override. When None, the console's address is taken from its /log POST.
 PLDMGR_IP = None
 PLDMGR_PORT = 9021
-PLDMGR_ELF = Path.home('/path/to/pldmgr_v0.6.3.elf')
+PLDMGR_ELF = None  # set from --pldmgr; when None, pldmgr is never sent
 PLDMGR_DELAY = 5  # seconds to wait after elfldr starts
 PLDMGR_TRIGGER = 'Created bin thread'  # PS5 log line that arms the timer
 
@@ -89,6 +89,10 @@ def ensure_cert(cert, key, ip):
 
 def send_pldmgr():
     # Equivalent to: nc <console> PLDMGR_PORT < PLDMGR_ELF
+    if PLDMGR_ELF is None:
+        print('[pldmgr] disabled - no --pldmgr given', flush=True)
+        return
+
     target = pldmgr_target()
 
     if not target:
@@ -113,7 +117,7 @@ def send_pldmgr():
 
 
 def arm_pldmgr():
-    if _pldmgr_armed.is_set():
+    if PLDMGR_ELF is None or _pldmgr_armed.is_set():
         return
 
     _pldmgr_armed.set()
@@ -138,12 +142,13 @@ class WobkotHandler(SimpleHTTPRequestHandler):
 
         with _pldmgr_lock:
             payload = {
+                'enabled': PLDMGR_ELF is not None,
                 'status': _pldmgr_status,
                 'error': _pldmgr_error,
                 'delay': PLDMGR_DELAY,
                 'ip': pldmgr_target(),
                 'port': PLDMGR_PORT,
-                'file': str(PLDMGR_ELF),
+                'file': str(PLDMGR_ELF) if PLDMGR_ELF is not None else None,
             }
 
         body = json.dumps(payload).encode('utf-8')
@@ -241,6 +246,7 @@ def parse_args():
     p.add_argument('--cert', help='TLS certificate chain (may include the key)')
     p.add_argument('--key', help='TLS private key (omit if the key is in --cert)')
     p.add_argument('--ip', help='address used in the generated certificate (default: auto-detect LAN IP)')
+    p.add_argument('--pldmgr', help='ELF to send to the console after elfldr starts (omit to disable)')
     args = p.parse_args()
     if args.key and not args.cert:
         p.error('--key requires --cert')
@@ -248,8 +254,17 @@ def parse_args():
 
 
 def main():
+    global PLDMGR_ELF
+
     args = parse_args()
     ip = args.ip or detect_ip()
+
+    if args.pldmgr:
+        PLDMGR_ELF = Path(args.pldmgr).expanduser()
+        if not PLDMGR_ELF.is_file():
+            raise SystemExit(f'[pldmgr] missing {PLDMGR_ELF}')
+    else:
+        PLDMGR_ELF = None
 
     if args.cert:
         cert, key = Path(args.cert), Path(args.key) if args.key else None
@@ -278,11 +293,11 @@ def main():
         print(f'[host] http://{ip}:{args.http_port} -> https://{ip}:{args.https_port}')
     print(f'[host] https://{ip}:{args.https_port}')
     print(f"[host] PS5 flow: Settings > Network > manual DNS {ip} -> User's Guide -> accept certificate warning")
-    if PLDMGR_ELF.exists():
+    if PLDMGR_ELF is not None:
         target = PLDMGR_IP or 'console address from /log'
-        print(f'[pldmgr] armed: {PLDMGR_ELF.name} -> {target}:{PLDMGR_PORT} ({PLDMGR_DELAY}s after elfldr)')
+        print(f'[pldmgr] armed: {PLDMGR_ELF} -> {target}:{PLDMGR_PORT} ({PLDMGR_DELAY}s after elfldr)')
     else:
-        print(f'[pldmgr] warning: {PLDMGR_ELF} not found - auto-send will fail')
+        print('[pldmgr] disabled (no --pldmgr)')
 
     try:
         httpsd.serve_forever()

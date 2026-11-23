@@ -79,6 +79,45 @@ async function load_file(src) {
   return new Uint8Array(buf);
 }
 
+async function watch_pldmgr() {
+  const deadline = Date.now() + 180000;
+  let last = 'idle';
+
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch('/pldmgr', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const state = await res.json();
+
+      if (state.status !== last) {
+        if (state.status === 'armed') {
+          logger.info(`pldmgr armed, sending in ${state.delay}s`);
+        } else if (state.status === 'sending' || state.status === 'sent') {
+          logger.info('Sending pldmgr.elf...');
+
+          try {
+            notify('Sending pldmgr.elf...');
+          } catch (e) {
+            logger.error(`Unable to notify: ${e.message}`);
+          }
+
+          break;
+        } else if (state.status === 'error') {
+          logger.error(`pldmgr: ${state.error}`);
+          break;
+        }
+
+        last = state.status;
+      }
+    } catch (e) {
+      logger.error(`pldmgr poll failed: ${e.message}`);
+    }
+
+    await sleep(100);
+  }
+}
+
 async function main() {
   logger.info('main() start');
 
@@ -113,6 +152,8 @@ async function main() {
   logger.info('running kernel_main()');
   await kernel_main();
   logger.info('kernel done');
+
+  await watch_pldmgr();
 }
 
 logger.init();

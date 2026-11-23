@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import shutil
 import socket
@@ -23,6 +24,17 @@ PLDMGR_DELAY = 5  # seconds to wait after elfldr starts
 PLDMGR_TRIGGER = 'Created bin thread'  # PS5 log line that arms the timer
 
 _pldmgr_armed = threading.Event()
+_pldmgr_lock = threading.Lock()
+_pldmgr_status = 'idle'
+_pldmgr_error = None
+
+
+def set_pldmgr_status(status, error=None):
+    global _pldmgr_status, _pldmgr_error
+
+    with _pldmgr_lock:
+        _pldmgr_status = status
+        _pldmgr_error = error
 
 
 def detect_ip():
@@ -65,6 +77,7 @@ def ensure_cert(cert, key, ip):
 def send_pldmgr():
     # Equivalent to: nc PLDMGR_IP PLDMGR_PORT < PLDMGR_ELF
     print(f'[pldmgr] sending {PLDMGR_ELF} -> {PLDMGR_IP}:{PLDMGR_PORT}', flush=True)
+    set_pldmgr_status('sending')
     try:
         with PLDMGR_ELF.open('rb') as f, socket.create_connection(
             (PLDMGR_IP, PLDMGR_PORT), timeout=10
@@ -73,8 +86,10 @@ def send_pldmgr():
                 sock.sendall(chunk)
             sock.shutdown(socket.SHUT_WR)
         print(f'[pldmgr] sent {PLDMGR_ELF.stat().st_size} bytes', flush=True)
+        set_pldmgr_status('sent')
     except OSError as e:
         print(f'[pldmgr] send failed: {e}', flush=True)
+        set_pldmgr_status('error', str(e))
 
 
 def arm_pldmgr():
@@ -82,6 +97,7 @@ def arm_pldmgr():
         return
 
     _pldmgr_armed.set()
+    set_pldmgr_status('armed')
     print(f'[pldmgr] elfldr up - firing in {PLDMGR_DELAY}s', flush=True)
 
     timer = threading.Timer(PLDMGR_DELAY, send_pldmgr)
@@ -95,6 +111,27 @@ class WobkotHandler(SimpleHTTPRequestHandler):
         '.bin': 'application/octet-stream',
         '.elf': 'application/octet-stream',
     }
+
+    def do_GET(self):
+        if self.path.split('?', 1)[0] != '/pldmgr':
+            return super().do_GET()
+
+        with _pldmgr_lock:
+            payload = {
+                'status': _pldmgr_status,
+                'error': _pldmgr_error,
+                'delay': PLDMGR_DELAY,
+                'ip': PLDMGR_IP,
+                'port': PLDMGR_PORT,
+                'file': str(PLDMGR_ELF),
+            }
+
+        body = json.dumps(payload).encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def send_head(self):
         if os.path.exists(self.translate_path(self.path)):
